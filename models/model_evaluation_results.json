@@ -1,0 +1,123 @@
+{
+  "timestamp": "2026-10-21 14:50:29",
+  "total_samples": 100000,
+  "train_samples": 80000,
+  "test_samples": 20000,
+  "feature_count": 26,
+  "xgboost": {
+    "model_name": "XGBoost",
+    "train_time_sec": 0.75,
+    "latency_per_sample_ms": 0.001,
+    "accuracy": 0.9767,
+    "precision": 0.9889,
+    "recall": 0.9642,
+    "f1_score": 0.9764,
+    "fpr": 0.0108,
+    "confusion_matrix": {
+      "TN": 9892,
+      "FP": 108,
+      "FN": 358,
+      "TP": 9642
+    },
+    "top_10_features": [
+      {
+        "feature": "url_length",
+        "importance": 0.2540999948978424
+      },
+      {
+        "feature": "is_https",
+        "importance": 0.2110999971628189
+      },
+      {
+        "feature": "path_length",
+        "importance": 0.20569999516010284
+      },
+      {
+        "feature": "num_dots",
+        "importance": 0.14669999480247498
+      },
+      {
+        "feature": "num_subdomains",
+        "importance": 0.04050000011920929
+      },
+      {
+        "feature": "num_letters",
+        "importance": 0.034299999475479126
+      },
+      {
+        "feature": "num_digits",
+        "importance": 0.02410000003874302
+      },
+      {
+        "feature": "num_slash",
+        "importance": 0.022700000554323196
+      },
+      {
+        "feature": "query_length",
+        "importance": 0.012199999764561653
+      },
+      {
+        "feature": "domain_length",
+        "importance": 0.011800000444054604
+      }
+    ]
+  },
+  "random_forest": {
+    "model_name": "Random Forest",
+    "train_time_sec": 0.83,
+    "latency_per_sample_ms": 0.0021,
+    "accuracy": 0.9764,
+    "precision": 0.9888,
+    "recall": 0.9636,
+    "f1_score": 0.976,
+    "fpr": 0.0109,
+    "confusion_matrix": {
+      "TN": 9891,
+      "FP": 109,
+      "FN": 364,
+      "TP": 9636
+    },
+    "top_10_features": [
+      {
+        "feature": "url_length",
+        "importance": 0.1771
+      },
+      {
+        "feature": "num_letters",
+        "importance": 0.1472
+      },
+      {
+        "feature": "num_dots",
+        "importance": 0.122
+      },
+      {
+        "feature": "num_subdomains",
+        "importance": 0.0963
+      },
+      {
+        "feature": "shannon_entropy",
+        "importance": 0.0952
+      },
+      {
+        "feature": "path_length",
+        "importance": 0.0815
+      },
+      {
+        "feature": "is_https",
+        "importance": 0.0782
+      },
+      {
+        "feature": "domain_length",
+        "importance": 0.0733
+      },
+      {
+        "feature": "digit_ratio",
+        "importance": 0.0437
+      },
+      {
+        "feature": "num_digits",
+        "importance": 0.0384
+      }
+    ]
+  }
+}
