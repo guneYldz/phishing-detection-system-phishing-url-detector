@@ -1,0 +1,10 @@
+{
+  "timestamp": "2026-10-28 15:20:00",
+  "week": 4,
+  "scope": "FastAPI Backend Core (/api/analyze, /api/health, /api/model-info)",
+  "sample_test_count": 6,
+  "sample_accuracy": 1.0,
+  "avg_inference_latency_ms": 1.42,
+  "max_inference_latency_ms": 2.18,
+  "sla_100ms_passed": true
+}
