@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PhishGuard AI - Kimlik Avı URL Tespit Sistemi</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-icon">PG</div>
+        <div>
+          <h1>PhishGuard AI</h1>
+          <p>Leksikal &amp; XGBoost Tabanlı Kimlik Avı (Phishing) URL Tespit Sistemi</p>
+        </div>
+      </div>
+      <div class="status-badges">
+        <span class="badge" id="badge-health"><span class="dot"></span> Model Kontrol Ediliyor...</span>
+        <span class="badge" id="badge-acc">Doğruluk: %97.67</span>
+        <span class="badge" id="badge-f1">F1: %97.64</span>
+        <span class="badge" id="badge-fpr">FPR: %1.08</span>
+        <span class="badge" id="badge-sla">SLA: &lt;100 ms</span>
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="single" onclick="switchTab('single')">Tekil URL Analizi</button>
+      <button class="tab-btn" data-tab="batch" onclick="switchTab('batch')">Toplu URL Tarama (Batch Scan)</button>
+    </div>
+
+    <section id="tab-single" class="tab-panel active">
+      <div class="card">
+        <h3>Tekil URL Güvenlik Analizi</h3>
+        <p class="sub">Analiz etmek istediğiniz web adresini girin. Sistem 26 leksikal özellik ve XGBoost modeli ile tahmin üretir.</p>
+        <div class="input-row">
+          <input type="text" id="single-url-input" placeholder="Örn: https://www.google.com veya http://paypal-secure-login.xyz/verify" />
+          <button class="btn btn-primary" id="btn-single-analyze" onclick="analyzeSingleUrl()">Analiz Et</button>
+        </div>
+        <div class="sample-row">
+          <span class="sample-label">Örnek URL'ler:</span>
+          <button class="btn btn-secondary btn-sm" onclick="fillSingleSample('https://www.firat.edu.tr/')">Güvenli: firat.edu.tr</button>
+          <button class="btn btn-secondary btn-sm" onclick="fillSingleSample('https://www.wikipedia.org/')">Güvenli: wikipedia.org</button>
+          <button class="btn btn-secondary btn-sm" onclick="fillSingleSample('http://192.168.1.105/banking/login.php?session=98123')">Phishing: IP + Login</button>
+          <button class="btn btn-secondary btn-sm" onclick="fillSingleSample('http://paypal-secure-login.account-update.xyz/verify?user=admin')">Phishing: Marka Taklidi</button>
+        </div>
+        <div class="alert-err" id="single-error"></div>
+      </div>
+
+      <div id="single-result-area" class="hidden">
+        <div class="result-grid">
+          <div class="card">
+            <h3>Tahmin Özeti</h3>
+            <div id="verdict-box" class="verdict-box">
+              <div class="verdict-header">
+                <span class="verdict-title" id="verdict-label">-</span>
+                <span class="pill" id="verdict-risk-pill">-</span>
+              </div>
+              <div class="verdict-url" id="verdict-url">-</div>
+              <div class="prob-bar-wrap">
+                <div class="prob-bar-fill" id="prob-bar-fill"></div>
+              </div>
+              <div class="meta-row">
+                <span>Phishing: <strong id="verdict-phish-prob">-</strong></span>
+                <span>Güvenli: <strong id="verdict-benign-prob">-</strong></span>
+                <span>Süre: <strong id="verdict-latency">-</strong></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3>Risk Faktörleri</h3>
+            <p class="sub">Tespit edilen temel yapısal bulgular:</p>
+            <div class="factor-list" id="single-factors-list"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Çıkarılan 26 Leksikal Özellik</h3>
+          <div class="features-grid" id="single-features-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-batch" class="tab-panel">
+      <div class="card">
+        <h3>Toplu URL Tarama (Batch Scan)</h3>
+        <p class="sub">Her satıra bir URL yazın (tek seferde en fazla 100 URL). Sonuçları CSV veya JSON olarak indirebilirsiniz.</p>
+        <textarea id="batch-urls-input" placeholder="https://www.google.com/&#10;https://www.firat.edu.tr/&#10;http://192.168.1.105/banking/login.php?session=98123&#10;http://paypal-secure-login.account-update.xyz/verify?user=admin"></textarea>
+        <div class="sample-row space-between">
+          <div class="btn-group">
+            <button class="btn btn-secondary btn-sm" onclick="fillBatchSample()">Örnek Liste Doldur (6 URL)</button>
+            <button class="btn btn-secondary btn-sm" onclick="clearBatch()">Temizle</button>
+          </div>
+          <button class="btn btn-primary" id="btn-batch-analyze" onclick="analyzeBatchUrls()">Toplu Taramayı Başlat</button>
+        </div>
+        <div class="alert-err" id="batch-error"></div>
+      </div>
+
+      <div id="batch-result-area" class="hidden">
+        <div class="stats-grid">
+          <div class="stat-card"><span class="stat-label">Toplam URL</span><strong class="stat-value" id="stat-total">0</strong></div>
+          <div class="stat-card"><span class="stat-label">Zararlı (Phishing)</span><strong class="stat-value text-danger" id="stat-phishing">0</strong></div>
+          <div class="stat-card"><span class="stat-label">Güvenli (Benign)</span><strong class="stat-value text-safe" id="stat-benign">0</strong></div>
+          <div class="stat-card"><span class="stat-label">Ort. Süre / URL</span><strong class="stat-value" id="stat-avg-latency">0 ms</strong></div>
+        </div>
+
+        <div class="card">
+          <div class="table-header-bar">
+            <div>
+              <h3>Tarama Sonuçları</h3>
+              <p class="sub no-margin" id="batch-total-time-info">-</p>
+            </div>
+            <div class="btn-group">
+              <button class="btn btn-secondary btn-sm" onclick="exportBatchCSV()">CSV İndir</button>
+              <button class="btn btn-secondary btn-sm" onclick="exportBatchJSON()">JSON İndir</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>URL</th>
+                  <th>Sınıf</th>
+                  <th>Olasılık (%)</th>
+                  <th>Risk Seviyesi</th>
+                  <th>Öne Çıkan Risk</th>
+                  <th>Süre (ms)</th>
+                </tr>
+              </thead>
+              <tbody id="batch-results-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer>Fırat Üniversitesi Bilgisayar Mühendisliği Tasarım Dersi Projesi — PhishGuard AI</footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

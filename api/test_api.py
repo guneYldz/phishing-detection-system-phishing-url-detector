@@ -1,9 +1,6 @@
 """
-Phishing URL Detection System - 4. Hafta FastAPI Arka Uç Birim ve Tepki Süresi Testleri
-İş Paketi 4 (Aşama 1) Kapsamında:
-- /api/health, /api/model-info ve /api/analyze uç noktalarının doğrulanması
-- Tekil URL tahmin süresinin <100 ms altında olduğunun (FOG-4) test edilmesi
-- Açıklanabilir leksikal risk faktörü çıktılarının (FG-4) kontrolü
+Phishing URL Tespit Sistemi - API ve Web Arayüzü Doğrulama Testleri
+Web arayüzü, tekil analiz, toplu URL tarama, gecikme (<100 ms) ve hata senaryolarını test eder.
 """
 
 import os
@@ -17,77 +14,190 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from api.main import app
+from api.main import app, MAX_BATCH_URLS
 
 client = TestClient(app)
 
 
-def run_backend_api_tests():
-    print("=" * 68)
-    print("4. HAFTA FASTAPI ARKA UÇ (BACKEND) SERVİS DOĞRULAMA TESTLERİ")
-    print("=" * 68)
+def measure_get(path: str):
+    t0 = time.perf_counter()
+    resp = client.get(path)
+    elapsed_ms = round((time.perf_counter() - t0) * 1000, 3)
+    return resp, elapsed_ms
 
-    # 1. Sağlık kontrolü
-    r_health = client.get("/api/health")
+
+def run_api_tests():
+    print("=" * 70)
+    print("PHISHGUARD AI - API VE WEB ARAYÜZÜ TESTLERİ")
+    print("=" * 70)
+
+    endpoint_latencies = {}
+
+    # 1. Web arayüzü ve statik dosya uç noktaları
+    r_root, lat_root = measure_get("/")
+    assert r_root.status_code == 200
+    assert "PhishGuard AI" in r_root.text and "Toplu URL Tarama" in r_root.text
+    assert 'href="style.css"' in r_root.text and 'src="app.js"' in r_root.text
+    assert lat_root < 100.0
+
+    r_ui, lat_ui = measure_get("/ui")
+    assert r_ui.status_code == 200
+    assert "PhishGuard AI" in r_ui.text
+    assert lat_ui < 100.0
+
+    r_css, lat_css = measure_get("/style.css")
+    assert r_css.status_code == 200 and ".topbar" in r_css.text
+
+    r_js, lat_js = measure_get("/app.js")
+    assert r_js.status_code == 200 and "analyzeBatchUrls" in r_js.text
+
+    assert client.get("/ui/style.css").status_code == 200
+    assert client.get("/ui/app.js").status_code == 200
+    assert client.get("/static/style.css").status_code == 200
+
+    endpoint_latencies["ui_avg_ms"] = round((lat_root + lat_ui) / 2, 3)
+    endpoint_latencies["static_avg_ms"] = round((lat_css + lat_js) / 2, 3)
+    print(
+        f"[OK] GET /, /ui, /static/* -> Arayüz ve statik dosyalar yüklendi "
+        f"(HTML Ort: {endpoint_latencies['ui_avg_ms']} ms, CSS/JS Ort: {endpoint_latencies['static_avg_ms']} ms)"
+    )
+
+    # 2. Servis, sağlık ve model bilgisi kontrolleri
+    r_api, lat_api = measure_get("/api")
+    assert r_api.status_code == 200
+    api_data = r_api.json()
+    assert "/api/batch-analyze" in api_data.get("endpoints", [])
+    endpoint_latencies["api_root_ms"] = lat_api
+    print(f"[OK] GET /api -> Sürüm: {api_data['version']} ({lat_api} ms)")
+
+    r_health, lat_health = measure_get("/api/health")
     assert r_health.status_code == 200
     h_data = r_health.json()
     assert h_data["status"] == "ok" and h_data["model_loaded"] is True
-    print(f"[OK] GET /api/health -> Model Yüklü ({h_data['feature_count']} leksikal özellik)")
+    endpoint_latencies["health_ms"] = lat_health
+    print(f"[OK] GET /api/health -> Model hazır ({h_data['feature_count']} özellik, {lat_health} ms)")
 
-    # 2. Model bilgisi kontrolü
-    r_info = client.get("/api/model-info")
+    r_info, lat_info = measure_get("/api/model-info")
     assert r_info.status_code == 200
-    print("[OK] GET /api/model-info -> Eğitim ve doğrulama metrikleri döndürüldü")
+    info_data = r_info.json()
+    assert info_data["status"] == "ok" and len(info_data["feature_names"]) == 26
+    endpoint_latencies["model_info_ms"] = lat_info
+    print(f"[OK] GET /api/model-info -> Model metrikleri alındı ({lat_info} ms)")
 
-    # 3. Tekil URL Analizi (/api/analyze) ve Gecikme (Latency < 100 ms) Testi
+    # 3. Tekil URL analizi testleri
     samples = [
         ("https://www.google.com/", 0),
         ("https://www.firat.edu.tr/", 0),
+        ("https://www.youtube.com/watch?v=Z7_fQqhQfto", 0),
         ("https://github.com/torvalds/linux", 0),
         ("http://192.168.1.105/banking/login.php?session=98123", 1),
         ("http://paypal-secure-login.account-update.xyz/verify?user=admin", 1),
         ("https://apple-id-support-verify.serveo.net/signin", 1),
     ]
 
-    latencies = []
-    correct = 0
+    single_latencies = []
+    single_correct = 0
 
+    print("\n--- Tekil URL Analizi (/api/analyze) ---")
     for url, expected in samples:
         resp = client.post("/api/analyze", json={"url": url})
         assert resp.status_code == 200
         data = resp.json()
-        latencies.append(data["latency_ms"])
         assert data["latency_ms"] < 100.0
+        assert data["meets_latency_sla"] is True
+        assert isinstance(data["risk_factors"], list) and len(data["risk_factors"]) >= 1
+        single_latencies.append(data["latency_ms"])
         if data["prediction"] == expected:
-            correct += 1
+            single_correct += 1
         print(
             f"  -> {url[:48]:48s} | Tahmin: {data['label']:8s} | "
             f"Olasılık: {data['phishing_probability']:.4f} | Süre: {data['latency_ms']:.3f} ms"
         )
 
-    avg_lat = round(sum(latencies) / len(latencies), 4)
-    max_lat = round(max(latencies), 4)
+    avg_single_lat = round(sum(single_latencies) / len(single_latencies), 3)
+    max_single_lat = round(max(single_latencies), 3)
+    endpoint_latencies["analyze_avg_ms"] = avg_single_lat
+    endpoint_latencies["analyze_max_ms"] = max_single_lat
+
+    # 4. Toplu URL tarama testleri
+    print("\n--- Toplu URL Tarama (/api/batch-analyze) ---")
+    batch_urls = [u for u, _ in samples]
+    r_batch = client.post("/api/batch-analyze", json={"urls": batch_urls})
+    assert r_batch.status_code == 200
+    b_data = r_batch.json()
+
+    assert b_data["total_urls"] == len(batch_urls)
+    assert b_data["phishing_count"] + b_data["benign_count"] == b_data["total_urls"]
+    assert len(b_data["results"]) == len(batch_urls)
+    assert b_data["avg_latency_per_url_ms"] < 100.0
+    assert b_data["meets_latency_sla"] is True
+
+    batch_correct = sum(
+        1 for idx, item in enumerate(b_data["results"]) if item["prediction"] == samples[idx][1]
+    )
+    endpoint_latencies["batch_total_ms"] = b_data["total_latency_ms"]
+    endpoint_latencies["batch_avg_per_url_ms"] = b_data["avg_latency_per_url_ms"]
+    print(
+        f"[OK] POST /api/batch-analyze -> {b_data['total_urls']} URL | "
+        f"Phishing: {b_data['phishing_count']}, Benign: {b_data['benign_count']} | "
+        f"Toplam: {b_data['total_latency_ms']} ms | Ort/URL: {b_data['avg_latency_per_url_ms']} ms"
+    )
+
+    # 5. Geçersiz girdi ve sınır durumu testleri
+    print("\n--- Hata ve Sınır Durumu Testleri ---")
+    t_err0 = time.perf_counter()
+
+    r_empty = client.post("/api/analyze", json={"url": ""})
+    assert r_empty.status_code in (400, 422)
+
+    r_spaces = client.post("/api/analyze", json={"url": "   "})
+    assert r_spaces.status_code == 400
+
+    r_empty_batch = client.post("/api/batch-analyze", json={"urls": []})
+    assert r_empty_batch.status_code in (400, 422)
+
+    r_blank_batch = client.post("/api/batch-analyze", json={"urls": ["", "   "]})
+    assert r_blank_batch.status_code == 400
+
+    over_limit_urls = [f"https://example{i}.com" for i in range(MAX_BATCH_URLS + 1)]
+    r_over_limit = client.post("/api/batch-analyze", json={"urls": over_limit_urls})
+    assert r_over_limit.status_code == 400
+
+    r_noscheme = client.post("/api/analyze", json={"url": "firat.edu.tr"})
+    assert r_noscheme.status_code == 200
+    assert r_noscheme.json()["latency_ms"] < 100.0
+
+    err_tests_avg_ms = round(((time.perf_counter() - t_err0) * 1000) / 6, 3)
+    endpoint_latencies["error_tests_avg_ms"] = err_tests_avg_ms
+    print(f"[OK] Hata ve sınır durumu testleri (6 senaryo) geçildi (Ort: {err_tests_avg_ms} ms/test)")
 
     summary = {
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "week": 4,
-        "scope": "FastAPI Backend Core (/api/analyze, /api/health, /api/model-info)",
+        "week": 6,
+        "scope": "Web arayüzü, tekil analiz, toplu tarama ve hata durumu testleri",
         "sample_test_count": len(samples),
-        "sample_accuracy": round(correct / len(samples), 4),
-        "avg_inference_latency_ms": avg_lat,
-        "max_inference_latency_ms": max_lat,
-        "sla_100ms_passed": True
+        "single_sample_accuracy": round(single_correct / len(samples), 4),
+        "batch_sample_accuracy": round(batch_correct / len(samples), 4),
+        "avg_inference_latency_ms": avg_single_lat,
+        "max_inference_latency_ms": max_single_lat,
+        "batch_total_latency_ms": b_data["total_latency_ms"],
+        "batch_avg_latency_per_url_ms": b_data["avg_latency_per_url_ms"],
+        "endpoint_latencies_ms": endpoint_latencies,
+        "error_cases_passed": 6,
+        "sla_100ms_passed": True,
     }
 
     out_path = os.path.join(PROJECT_ROOT, "models", "api_benchmark_results.json")
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    print("=" * 68)
-    print(f"4. HAFTA API TESTLERİ TAMAMLANDI | Ort. Tepki Süresi: {avg_lat} ms (<100 ms)")
-    print("=" * 68)
+    print("=" * 70)
+    print(
+        f"TÜM TESTLER GEÇİLDİ | Tekil Ort: {avg_single_lat} ms | "
+        f"Toplu Ort/URL: {b_data['avg_latency_per_url_ms']} ms (<100 ms)"
+    )
+    print("=" * 70)
 
 
 if __name__ == "__main__":
-    run_backend_api_tests()
-
+    run_api_tests()

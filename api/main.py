@@ -1,26 +1,24 @@
 """
-Phishing URL Detection System - FastAPI REST API Arka Uç Servisi (4. Hafta)
-İş Paketi 4 (Aşama 1) Kapsamında:
-- 3. haftada eğitilip dondurulan XGBoost modelinin (xgboost_model.joblib) başlangıçta belleğe (RAM) yüklenmesi
-- Tekil URL sorgulaması (/api/analyze) için 26 leksikal/sezgisel özelliğin çıkarılması ve <100 ms altında (FOG-4) tahmin üretilmesi
-- Açıklanabilir leksikal risk faktörlerinin (FG-4) JSON yanıtı olarak döndürülmesi
-- 5. haftada geliştirilecek Web Arayüzü (Frontend) için CORS ve REST uç noktalarının hazırlanması
+Phishing URL Tespit Sistemi - FastAPI Servisi
+XGBoost modelini belleğe yükler, tekil ve toplu URL analizi uç noktaları ile web arayüzünü sunar.
 """
 
 import os
 import sys
 import json
 import time
-from typing import List, Dict, Any
+from urllib.parse import urlparse
+from typing import List, Dict, Any, Tuple
 
 import joblib
 import pandas as pd
 import xgboost as xgb
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-# Proje kök dizinini sys.path'e ekle
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 if PROJECT_ROOT not in sys.path:
@@ -28,16 +26,24 @@ if PROJECT_ROOT not in sys.path:
 
 from features.extract_features import extract_url_features
 
+API_VERSION = "0.6.0"
+MAX_BATCH_URLS = 100
+ACTIVE_ENDPOINTS = [
+    "/",
+    "/ui",
+    "/api",
+    "/api/health",
+    "/api/model-info",
+    "/api/analyze",
+    "/api/batch-analyze",
+]
+
 app = FastAPI(
-    title="Kimlik Avı (Phishing) URL Tespit Sistemi - REST API",
-    description=(
-        "Fırat Üniversitesi Bilgisayar Mühendisliği Tasarım Dersi Projesi (4. Hafta) — "
-        "XGBoost ve Leksikal Özellik Çıkarım Motoru Tabanlı Gerçek Zamanlı Tahmin Arka Ucu"
-    ),
-    version="0.4.0",
+    title="PhishGuard AI - Kimlik Avı URL Tespit Sistemi",
+    description="XGBoost ve leksikal özellik çıkarımı tabanlı URL analiz servisi",
+    version=API_VERSION,
 )
 
-# 5. haftada entegre edilecek Web Arayüzü (Frontend) için CORS yapılandırması
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -46,12 +52,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Model ve meta veri yolları
 MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 XGB_JOBLIB_PATH = os.path.join(MODELS_DIR, "xgboost_model.joblib")
 XGB_JSON_PATH = os.path.join(MODELS_DIR, "xgboost_model.json")
 FEATURE_NAMES_PATH = os.path.join(MODELS_DIR, "feature_names.joblib")
 EVAL_RESULTS_PATH = os.path.join(MODELS_DIR, "model_evaluation_results.json")
+FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend")
+FRONTEND_HTML_PATH = os.path.join(FRONTEND_DIR, "index.html")
+
+if os.path.isdir(FRONTEND_DIR):
+    app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 MODEL = None
 FEATURE_NAMES: List[str] = []
@@ -59,7 +69,7 @@ MODEL_METRICS: Dict[str, Any] = {}
 
 
 def load_artifacts() -> None:
-    """Eğitilmiş XGBoost modelini, özellik listesini ve doğrulama metriklerini belleğe yükler."""
+    """Eğitilmiş XGBoost modelini, özellik listesini ve test metriklerini yükler."""
     global MODEL, FEATURE_NAMES, MODEL_METRICS
 
     if os.path.exists(FEATURE_NAMES_PATH):
@@ -82,17 +92,28 @@ def load_artifacts() -> None:
             MODEL_METRICS = json.load(f)
 
 
+def read_frontend_html() -> str:
+    """Web arayüzü HTML dosyasını okur."""
+    if not os.path.exists(FRONTEND_HTML_PATH):
+        raise HTTPException(status_code=404, detail="Web arayüzü dosyası bulunamadı.")
+
+    with open(FRONTEND_HTML_PATH, "r", encoding="utf-8") as f:
+        return f.read()
+
+
 load_artifacts()
 
 
 class URLAnalyzeRequest(BaseModel):
-    url: str = Field(..., min_length=3, max_length=4096, description="Analiz edilecek web adresi (URL)")
+    url: str = Field(..., min_length=3, max_length=4096, description="Analiz edilecek URL")
+
+
+class BatchURLAnalyzeRequest(BaseModel):
+    urls: List[str] = Field(..., description="Toplu analiz edilecek URL listesi (en fazla 100)")
 
 
 def generate_lexical_risk_factors(features: dict, phishing_prob: float) -> List[Dict[str, str]]:
-    """
-    Çıkarılan 26 leksikal ve sezgisel özelliğe göre açıklanabilir risk faktörleri üretir (FG-4).
-    """
+    """Çıkarılan leksikal özelliklere göre okunabilir risk açıklamaları üretir."""
     findings = []
 
     if features.get("has_ip") == 1:
@@ -158,7 +179,7 @@ def generate_lexical_risk_factors(features: dict, phishing_prob: float) -> List[
             "description": "URL uzunluğu standart güvenli sitelerin ortalamasının üzerinde."
         })
 
-    if features.get("shannon_entropy", 0.0) >= 4.3:
+    if features.get("shannon_entropy", 0.0) >= 4.6:
         findings.append({
             "severity": "low",
             "factor": f"Yüksek Karakter Entropisi ({features['shannon_entropy']})",
@@ -175,6 +196,47 @@ def generate_lexical_risk_factors(features: dict, phishing_prob: float) -> List[
     return findings
 
 
+SECOND_LEVEL_CCTLD = {"edu", "gov", "com", "org", "net", "ac", "co"}
+
+
+def extract_features_for_model(url_clean: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Görünüm için ham URL özelliklerini, model tahmini için ise Tranco eğitim formatıyla
+    (https://domain/) uyumlu normalize edilmiş özellikleri döndürür.
+    """
+    raw_features = extract_url_features(url_clean)
+    has_red_flags = any(
+        [
+            raw_features.get("is_https") != 1,
+            raw_features.get("has_ip") == 1,
+            raw_features.get("brand_spoofing") == 1,
+            raw_features.get("has_action_keywords") == 1,
+            raw_features.get("prefix_suffix") == 1,
+            raw_features.get("tld_in_path_or_sub") == 1,
+            raw_features.get("has_double_slash_path") == 1,
+            raw_features.get("is_shortened") == 1,
+            raw_features.get("num_at", 0) > 0,
+            raw_features.get("url_length", 0) > 120,
+        ]
+    )
+    if has_red_flags:
+        return raw_features, raw_features
+
+    candidate = url_clean if "://" in url_clean else f"http://{url_clean}"
+    hostname = urlparse(candidate).netloc.lower().split(":")[0]
+    bare_host = hostname[4:] if hostname.startswith("www.") else hostname
+    parts = [p for p in bare_host.split(".") if p]
+
+    is_root_domain = len(parts) == 2 or (
+        len(parts) == 3 and len(parts[-1]) == 2 and parts[-2] in SECOND_LEVEL_CCTLD
+    )
+    if is_root_domain:
+        model_features = extract_url_features(f"https://{bare_host}/")
+        return raw_features, model_features
+
+    return raw_features, raw_features
+
+
 def determine_risk_level(phishing_prob: float) -> str:
     if phishing_prob >= 0.85:
         return "KRİTİK"
@@ -185,20 +247,69 @@ def determine_risk_level(phishing_prob: float) -> str:
     return "DÜŞÜK (GÜVENLİ)"
 
 
-@app.get("/")
-async def root_status():
-    """Servis kök durum bilgisi (5. haftada Web Arayüzü bu katmana bağlanacaktır)."""
+def build_analysis_result(
+    url_clean: str,
+    features: Dict[str, Any],
+    benign_prob: float,
+    phishing_prob: float,
+    latency_ms: float,
+) -> Dict[str, Any]:
+    """Tekil ve toplu URL analizleri için ortak sonuç sözlüğünü oluşturur."""
+    pred_label = int(1 if phishing_prob >= 0.50 else 0)
+    risk_factors = generate_lexical_risk_factors(features, phishing_prob)
+
     return {
-        "service": "Phishing URL Detection REST API",
-        "version": "0.4.0 (Week 4 - Backend Core)",
+        "url": url_clean,
+        "prediction": pred_label,
+        "label": "PHISHING" if pred_label == 1 else "BENIGN",
+        "is_phishing": bool(pred_label == 1),
+        "phishing_probability": round(phishing_prob, 4),
+        "benign_probability": round(benign_prob, 4),
+        "risk_level": determine_risk_level(phishing_prob),
+        "latency_ms": round(latency_ms, 3),
+        "meets_latency_sla": bool(latency_ms < 100.0),
+        "risk_factors": risk_factors,
+        "lexical_features": features,
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+@app.get("/ui", response_class=HTMLResponse)
+@app.get("/ui/", response_class=HTMLResponse)
+async def serve_frontend():
+    """Web arayüzünü sunar."""
+    return HTMLResponse(content=read_frontend_html(), status_code=200)
+
+
+@app.get("/style.css")
+@app.get("/ui/style.css")
+async def serve_css():
+    """Ön yüz CSS dosyasını sunar."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "style.css"), media_type="text/css")
+
+
+@app.get("/app.js")
+@app.get("/ui/app.js")
+async def serve_js():
+    """Ön yüz JavaScript dosyasını sunar."""
+    return FileResponse(os.path.join(FRONTEND_DIR, "app.js"), media_type="application/javascript")
+
+
+@app.get("/api")
+async def api_root_status():
+    """API servis bilgisini ve aktif uç noktaları döndürür."""
+    return {
+        "service": "PhishGuard AI URL Detection API",
+        "version": API_VERSION,
         "docs_url": "/docs",
-        "endpoints": ["/api/health", "/api/model-info", "/api/analyze"]
+        "ui_url": "/ui",
+        "endpoints": ACTIVE_ENDPOINTS,
     }
 
 
 @app.get("/api/health")
 async def health_check():
-    """Arka uç servisinin ve bellekteki XGBoost modelinin sağlık kontrolünü yapar."""
+    """Servisin ve bellekteki modelin durumunu kontrol eder."""
     return {
         "status": "ok",
         "model_loaded": MODEL is not None,
@@ -210,7 +321,7 @@ async def health_check():
 
 @app.get("/api/model-info")
 async def get_model_info():
-    """3. haftada eğitilen modellerin doğrulama metriklerini ve özellik listesini döndürür."""
+    """Eğitilen modellerin doğrulama metriklerini ve özellik listesini döndürür."""
     return {
         "status": "ok",
         "feature_names": FEATURE_NAMES,
@@ -220,45 +331,96 @@ async def get_model_info():
 
 @app.post("/api/analyze")
 async def analyze_url(payload: URLAnalyzeRequest):
-    """
-    Tekil URL adresini 26 leksikal nitelik ve XGBoost modeliyle gerçek zamanlı analiz eder (FG-4, FOG-4).
-    """
+    """Tek bir URL adresini analiz edip olasılık ve risk faktörlerini döndürür."""
     t_start = time.perf_counter()
     url_clean = payload.url.strip()
     if not url_clean:
         raise HTTPException(status_code=400, detail="URL adresi boş olamaz.")
 
     try:
-        features = extract_url_features(url_clean)
-        ordered_row = {col: features.get(col, 0) for col in FEATURE_NAMES}
+        raw_features, model_features = extract_features_for_model(url_clean)
+        ordered_row = {col: model_features.get(col, 0) for col in FEATURE_NAMES}
         X_input = pd.DataFrame([ordered_row], columns=FEATURE_NAMES)
 
         proba = MODEL.predict_proba(X_input)[0]
         benign_prob = float(proba[0])
         phishing_prob = float(proba[1])
-        pred_label = int(1 if phishing_prob >= 0.50 else 0)
+        latency_ms = (time.perf_counter() - t_start) * 1000
 
-        latency_ms = round((time.perf_counter() - t_start) * 1000, 3)
-        risk_factors = generate_lexical_risk_factors(features, phishing_prob)
-
-        return {
-            "url": url_clean,
-            "prediction": pred_label,
-            "label": "PHISHING" if pred_label == 1 else "BENIGN",
-            "is_phishing": bool(pred_label == 1),
-            "phishing_probability": round(phishing_prob, 4),
-            "benign_probability": round(benign_prob, 4),
-            "risk_level": determine_risk_level(phishing_prob),
-            "latency_ms": latency_ms,
-            "meets_latency_sla": bool(latency_ms < 100.0),
-            "risk_factors": risk_factors,
-            "lexical_features": features,
-        }
+        return build_analysis_result(url_clean, raw_features, benign_prob, phishing_prob, latency_ms)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"URL analizi sırasında hata: {str(exc)}")
+
+
+@app.post("/api/batch-analyze")
+@app.post("/api/analyze/batch")
+async def batch_analyze_urls(payload: BatchURLAnalyzeRequest):
+    """Birden fazla URL adresini toplu olarak analiz eder."""
+    t_batch_start = time.perf_counter()
+    cleaned_urls = [u.strip() for u in payload.urls if u and u.strip()]
+
+    if not cleaned_urls:
+        raise HTTPException(status_code=400, detail="Analiz edilecek geçerli bir URL bulunamadı.")
+    if len(cleaned_urls) > MAX_BATCH_URLS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tek seferde en fazla {MAX_BATCH_URLS} URL analiz edilebilir (gönderilen: {len(cleaned_urls)}).",
+        )
+
+    try:
+        feature_list: List[Dict[str, Any]] = []
+        ordered_rows: List[Dict[str, Any]] = []
+        feature_timings_ms: List[float] = []
+
+        for url_clean in cleaned_urls:
+            t_feat = time.perf_counter()
+            raw_feats, model_feats = extract_features_for_model(url_clean)
+            feature_timings_ms.append((time.perf_counter() - t_feat) * 1000)
+            feature_list.append(raw_feats)
+            ordered_rows.append({col: model_feats.get(col, 0) for col in FEATURE_NAMES})
+
+        t_pred_start = time.perf_counter()
+        X_batch = pd.DataFrame(ordered_rows, columns=FEATURE_NAMES)
+        probas = MODEL.predict_proba(X_batch)
+        pred_per_url_ms = ((time.perf_counter() - t_pred_start) * 1000) / len(cleaned_urls)
+
+        results: List[Dict[str, Any]] = []
+        phishing_count = 0
+        for idx, url_clean in enumerate(cleaned_urls):
+            benign_prob = float(probas[idx][0])
+            phishing_prob = float(probas[idx][1])
+            item_latency_ms = feature_timings_ms[idx] + pred_per_url_ms
+            item = build_analysis_result(
+                url_clean,
+                feature_list[idx],
+                benign_prob,
+                phishing_prob,
+                item_latency_ms,
+            )
+            if item["is_phishing"]:
+                phishing_count += 1
+            results.append(item)
+
+        total_latency_ms = round((time.perf_counter() - t_batch_start) * 1000, 3)
+        avg_latency_per_url_ms = round(total_latency_ms / len(cleaned_urls), 3)
+
+        return {
+            "total_urls": len(cleaned_urls),
+            "phishing_count": phishing_count,
+            "benign_count": len(cleaned_urls) - phishing_count,
+            "total_latency_ms": total_latency_ms,
+            "avg_latency_per_url_ms": avg_latency_per_url_ms,
+            "meets_latency_sla": bool(avg_latency_per_url_ms < 100.0),
+            "results": results,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Toplu URL analizi sırasında hata: {str(exc)}")
 
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("api.main:app", host="127.0.0.1", port=8000, reload=True)
-
