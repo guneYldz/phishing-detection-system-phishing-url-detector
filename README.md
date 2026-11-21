@@ -5,15 +5,15 @@ Fırat Üniversitesi Bilgisayar Mühendisliği Tasarım Dersi Projesi
 Bu proje, şüpheli web sitelerinin URL adreslerini leksikal ve sezgisel nitelikler üzerinden analiz ederek zararlı (phishing) veya güvenli (benign) olduğunu tespit eden makine öğrenmesi tabanlı bir güvenlik sistemidir.
 
 ## Proje Ekibi
-- Mehmet Tunahan Uzun (235260025)
-- Güney Yıldız (245260019)
 - Murat Sayım (235260073)
+- Güney Yıldız (245260019)
+- Mehmet Tunahan Uzun (235260025)
 
 ---
 
 ## Proje Yapısı ve İşleyiş
 
-Sistem beş ana aşamadan oluşmaktadır:
+Sistem altı ana aşamadan oluşmaktadır:
 
 1. **Veri Toplama ve Temizleme:**
    - PhishTank ve OpenPhish beslemelerinden 50.000 zararlı URL, Tranco Top 1M listesinden 50.000 güvenli URL çekilerek toplam 100.000 satırlık dengeli veri seti (`dataset.csv`) oluşturulmuştur.
@@ -35,6 +35,10 @@ Sistem beş ana aşamadan oluşmaktadır:
 5. **PhishGuard AI Web Arayüzü ve Toplu Tarama:**
    - `frontend/` altındaki `index.html`, `style.css` ve `app.js` dosyaları ile sunulan web arayüzü (`/` ve `/ui`) sayesinde hem tekil URL analizi hem de aynı anda en fazla 100 URL'yi kapsayan **Toplu URL Tarama (Batch Scan)** gerçekleştirilebilmektedir.
    - Toplu tarama sonuçları özet istatistikler (toplam taranan, phishing/benign sayıları, ortalama URL gecikmesi) ile birlikte tabloda listelenmekte ve **CSV / JSON** formatında dışa aktarılabilmektedir.
+
+6. **Docker ile Konteynerizasyon ve Dağıtım Altyapısı:**
+   - Uygulama, `python:3.11-slim` tabanlı `Dockerfile`, `docker-compose.yml` ve `.dockerignore` yapılandırmaları ile izole bir konteyner imajı (`phishguard-ai:0.7.0`) olarak paketlenmiştir.
+   - Eğitim aşamasındaki büyük ham veri setleri (`veriseti/`) imaj dışına alınarak hafif bir üretim imajı elde edilmiş; root olmayan kullanıcı (`appuser`) ve otomatik `HEALTHCHECK` (`/api/health`) mekanizması entegre edilmiştir.
 
 ---
 
@@ -70,13 +74,23 @@ python features/extract_features.py
 python models/train_models.py
 ```
 
-### 3. Web Arayüzünü ve FastAPI Arka Ucunu Başlatma
+### 3. Web Arayüzünü ve FastAPI Arka Ucunu Yerelde Başlatma
 ```bash
 uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 - **PhishGuard AI Web Arayüzü:** `http://127.0.0.1:8000/` (veya `http://127.0.0.1:8000/ui`)
 - **Swagger OpenAPI Arayüzü:** `http://127.0.0.1:8000/docs`
-- **Entegrasyon, Hata Toleransı ve Başarım Testleri:** `python api/test_api.py`
+- **Entegrasyon, Hata Toleransı ve Docker Doğrulama Testleri:** `python api/test_api.py`
+
+### 4. Docker ile Konteyner Olarak Çalıştırma
+```bash
+# Docker Compose ile derleme ve arka planda başlatma
+docker compose up -d --build
+
+# Veya doğrudan Docker CLI ile
+docker build -t phishguard-ai:0.7.0 .
+docker run -d -p 8000:8000 --name phishguard-ai-service phishguard-ai:0.7.0
+```
 
 ---
 
@@ -86,8 +100,8 @@ uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload
 phishing-detection-system/
 ├── api/
 │   ├── __init__.py
-│   ├── main.py                       # FastAPI REST API ve Web Arayüzü sunucusu
-│   └── test_api.py                   # API, web arayüzü, hata ve gecikme (<100 ms) testleri
+│   ├── main.py                       # FastAPI REST API ve Web Arayüzü sunucusu (v0.7.0)
+│   └── test_api.py                   # API, web arayüzü, hata, gecikme ve Docker hazırlık testleri
 ├── frontend/
 │   ├── index.html                    # PhishGuard AI Web Arayüzü (HTML)
 │   ├── style.css                     # Arayüz stilleri (CSS)
@@ -100,7 +114,7 @@ phishing-detection-system/
 │   ├── xgboost_model.joblib          # Eğitilmiş model (Joblib)
 │   ├── feature_names.joblib          # Özellik listesi
 │   ├── model_evaluation_results.json # Ham metrik sonuçları
-│   └── api_benchmark_results.json    # REST API ve entegrasyon gecikme sonuçları
+│   └── api_benchmark_results.json    # REST API, entegrasyon ve konteyner doğrulama sonuçları
 ├── veriseti/
 │   ├── dataset.csv                   # 100.000 satırlık dengeli veri seti
 │   ├── features_100k.csv             # Özellik çıkarılmış veri seti matrisi
@@ -109,6 +123,9 @@ phishing-detection-system/
 │   ├── create_dataset.py             # Veri seti birleştirme ve karıştırma
 │   ├── extract_benign.py             # Tranco listesinden güvenli URL ayıklama
 │   └── extract_phishing.py           # Açık beslemelerden phishing URL ayıklama
+├── Dockerfile                        # Üretim ortamı Docker konteyner imaj tanımı
+├── docker-compose.yml                # Docker Compose servis ve sağlık kontrolü orkestrasyonu
+├── .dockerignore                     # Konteyner imajından hariç tutulacak dosya kuralları
 ├── requirements.txt                  # Bağımlılıklar
 └── README.md
 ```
