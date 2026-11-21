@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  phishguard-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: phishguard-ai:0.7.0
+    container_name: phishguard-ai-service
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=production
+      - HOST=0.0.0.0
+      - PORT=8000
+      - MAX_BATCH_URLS=100
+      - SLA_MAX_LATENCY_MS=100.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, json, sys; res = json.loads(urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4).read().decode()); sys.exit(0 if res.get('status') == 'ok' and res.get('model_loaded') else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
